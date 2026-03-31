@@ -66,3 +66,4 @@ faiss_index/
 .env.local
 .env.production
 .env.development
+.env.example
