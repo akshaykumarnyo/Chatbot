@@ -1,0 +1,109 @@
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sales AI Chatbot — Full Stack
+# Services: postgres · redis · backend (FastAPI) · frontend (React + Nginx)
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: chatbot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     chatbot
+      POSTGRES_PASSWORD: chatbot123
+      POSTGRES_DB:       chatbot_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"          # host 5433 → container 5432 (avoids clash with local PG)
+    networks:
+      - chatbot_net
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U chatbot -d chatbot_db"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: chatbot_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6380:6379"          # host 6380 → container 6379 (avoids clash)
+    networks:
+      - chatbot_net
+    healthcheck:
+      test:     ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout:  3s
+      retries:  5
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context:    ./backend
+      dockerfile: Dockerfile
+    container_name: chatbot_backend
+    restart: unless-stopped
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://chatbot:chatbot123@postgres:5432/chatbot_db
+      REDIS_URL:    redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - chatbot_net
+    volumes:
+      - ./backend:/app        # hot-reload in dev (remove for prod)
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level info
+
+  # ── Frontend (React + Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context:    ./frontend
+      dockerfile: Dockerfile
+    container_name: chatbot_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - chatbot_net
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# ── Network ──────────────────────────────────────────────────────────────────
+networks:
+  chatbot_net:
+    driver: bridge
